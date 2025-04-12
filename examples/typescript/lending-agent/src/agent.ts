@@ -8,6 +8,10 @@ import {
   handleSupply,
   handleWithdraw,
   handleGetUserPositions,
+  handleBuyNFT,
+  handlelistAutoAcceptNFT,
+  handleSearchNFT,
+  handlePlaceOfferNFT
 } from "./agentToolHandlers.js";
 import { promises as fs } from "fs";
 import path from "path";
@@ -95,10 +99,19 @@ const BorrowRepaySupplyWithdrawSchema = z.object({
   amount: z.string().describe("The amount of the token to use, as a string representation of a number."),
 });
 
+const NFTsSchema = z.object({
+  collectionName: z.string().describe("The name of the NFT Apechain collection (e.g., 'Gobs On Ape', 'Forever Undead'). Must be a valid collection available on the marketplace."),
+  amount: z.string().describe("The budget for purchasing NFTs, represented as a stringified number in the marketplace's currency (e.g., '100' for $100).").optional(),
+  attributes: z.array(z.string()).describe("Optional a list of desired NFT attributes (e.g., ['Laser Eyes', 'Gold Fur']). NFTs matching at least one of these attributes will be considered. Leave empty to ignore attributes.").optional(),
+  tokenId: z.string().describe("Optional list of token ID to filter specific NFTs (e.g., '123', '456'). Only NFTs with these token ID will be considered. Leave empty to include all.").optional(),
+});
+
 const GetUserPositionsSchema = z.object({});
 
 export class Agent {
-  private signer: ethers.Signer;
+  private arbitrumSigner: ethers.Signer;
+  private apechainSigner: ethers.Signer;
+  private wallet: ethers.Wallet;
   private userAddress: string;
   private tokenMap: Record<
     string,
@@ -113,9 +126,11 @@ export class Agent {
   private rl: readline.Interface | null = null;
   private llmTools: Record<string, CoreTool> = {};
 
-  constructor(signer: ethers.Signer, userAddress: string) {
-    this.signer = signer;
-    this.userAddress = userAddress;
+  constructor(arbitrumSigner: ethers.Signer, apechainSigner: ethers.Signer, wallet: ethers.Wallet) {
+    this.arbitrumSigner = arbitrumSigner;
+    this.apechainSigner = apechainSigner;
+    this.userAddress = wallet.address;
+    this.wallet = wallet;
     if (!process.env.OPENAI_API_KEY) {
       throw new Error("OPENAI_API_KEY not set!");
     }
@@ -145,6 +160,22 @@ export class Agent {
         description: "Get the user's current lending/borrowing positions, balances, and health factor.",
         parameters: GetUserPositionsSchema,
       }),
+      buyNFT: tool({
+        description: "Purchase an NFT from a specified collection within the user's budget.",
+        parameters: NFTsSchema,
+      }),
+      listAutoAccept: tool({
+        description: "List an NFT for a specified price and automatically accept any bids that meet or exceed the listing price.",
+        parameters: NFTsSchema,
+      }),
+      searchNFT: tool({
+        description: "Search and display NFTs in a collection based on specific attributes.",
+        parameters: NFTsSchema,
+      }),
+      offerNFT: tool({
+        description: "Place a bid on an NFT by specifying its ID or attributes and desired bid amount.",
+        parameters: NFTsSchema,
+      })
     };
   }
 
@@ -154,7 +185,7 @@ export class Agent {
 
   async init() {
     this.conversationHistory = [
-       {
+      {
         role: "system",
         content: `You are an assistant that provides access to blockchain lending and borrowing functionalities via Ember SDK. Never respond in markdown, always use plain text. Never add links to your response. Do not suggest the user to ask questions. When an unknown error happens, do not try to guess the error reason.`,
       },
@@ -171,13 +202,13 @@ export class Agent {
         { name: 'LendingAgent', version: '1.0.0' },
         { capabilities: { tools: {}, resources: {}, prompts: {} } }
       );
-      
+
       // Create StdioClientTransport
       const transport = new StdioClientTransport({
         command: 'node',
         args: ['../../../mcp-tools/typescript/emberai-mcp/dist/index.js'],
       });
-      
+
       // Connect to the server
       await this.mcpClient.connect(transport);
       this.log("MCP client initialized successfully.");
@@ -195,19 +226,19 @@ export class Agent {
         const parsedJson = JSON.parse(cachedData);
         const validationResult = McpGetCapabilitiesResponseSchema.safeParse(parsedJson);
         if (validationResult.success) {
-            lendingCapabilities = validationResult.data;
-            this.log("Cached capabilities loaded and validated successfully.")
+          lendingCapabilities = validationResult.data;
+          this.log("Cached capabilities loaded and validated successfully.")
         } else {
-            logError("Cached capabilities validation failed:", validationResult.error);
-            this.log("Proceeding to fetch fresh capabilities...");
-            // Fall through to fetch fresh capabilities
+          logError("Cached capabilities validation failed:", validationResult.error);
+          this.log("Proceeding to fetch fresh capabilities...");
+          // Fall through to fetch fresh capabilities
         }
       } catch (error) {
         this.log("Cache not found or invalid, fetching capabilities via MCP...");
-         // Fall through to fetch fresh capabilities
+        // Fall through to fetch fresh capabilities
       }
     }
-    
+
     // Fetch if cache was not used, invalid, or validation failed
     if (!lendingCapabilities) {
       this.log("Fetching capabilities via MCP...");
@@ -284,108 +315,108 @@ export class Agent {
     this.conversationHistory = nextMessages;
 
     if (finalAssistantMessage?.content) {
-       this.log("[assistant]:", finalAssistantMessage.content);
+      this.log("[assistant]:", finalAssistantMessage.content);
     }
     return finalAssistantMessage ?? null;
   }
 
   private async callLLMAndHandleTools(maxToolRoundtrips = 5): Promise<{ nextMessages: CoreMessage[], finalAssistantMessage: CoreMessage | null }> {
-      let currentMessages = [...this.conversationHistory];
-      let finalAssistantMessage: CoreMessage | null = null;
+    let currentMessages = [...this.conversationHistory];
+    let finalAssistantMessage: CoreMessage | null = null;
 
-      for (let i = 0; i < maxToolRoundtrips; i++) {
-          try {
-              const { text, toolCalls, finishReason, usage, warnings } = await generateText({
-                  model: openai("gpt-4o"),
-                  messages: currentMessages,
-                  tools: this.llmTools,
-              });
+    for (let i = 0; i < maxToolRoundtrips; i++) {
+      try {
+        const { text, toolCalls, finishReason, usage, warnings } = await generateText({
+          model: openai("gpt-4o"),
+          messages: currentMessages,
+          tools: this.llmTools,
+        });
 
-              // Construct AssistantMessage structure
-              const assistantMessageContent: Array<TextPart | ToolCallPart> = [];
-              if (text) {
-                  assistantMessageContent.push({ type: 'text', text }); // Standard TextPart
-              }
-              if (toolCalls && toolCalls.length > 0) {
-                  toolCalls.forEach(tc => {
-                      assistantMessageContent.push({ 
-                          type: 'tool-call', 
-                          toolCallId: tc.toolCallId, 
-                          toolName: tc.toolName, 
-                          args: tc.args
-                      });
-                  });
-              }
-              
-              // Use CoreMessage type, ensure structure matches Assistant role
-              const assistantMessage: CoreMessage = { 
-                  role: 'assistant', 
-                  content: assistantMessageContent,
-              };
-              currentMessages.push(assistantMessage);
+        // Construct AssistantMessage structure
+        const assistantMessageContent: Array<TextPart | ToolCallPart> = [];
+        if (text) {
+          assistantMessageContent.push({ type: 'text', text }); // Standard TextPart
+        }
+        if (toolCalls && toolCalls.length > 0) {
+          toolCalls.forEach(tc => {
+            assistantMessageContent.push({
+              type: 'tool-call',
+              toolCallId: tc.toolCallId,
+              toolName: tc.toolName,
+              args: tc.args
+            });
+          });
+        }
 
-              if (toolCalls && toolCalls.length > 0) {
-                  
-                  // Collect results as ToolResultPart objects
-                  const toolResultsParts: ToolResultPart[] = [];
-                  for (const toolCall of toolCalls) {
-                      this.log(`Attempting tool call: ${toolCall.toolName} with id ${toolCall.toolCallId}`);
-                      let result: any;
-                      let isError = false;
-                      // let followUpNeeded = false; // Seems unused
+        // Use CoreMessage type, ensure structure matches Assistant role
+        const assistantMessage: CoreMessage = {
+          role: 'assistant',
+          content: assistantMessageContent,
+        };
+        currentMessages.push(assistantMessage);
 
-                      try {
-                          const { content: toolContent /*, followUp: handlerFollowUp*/ } = await this.dispatchToolCall(
-                              toolCall.toolName,
-                              toolCall.args as Record<string, unknown>,
-                          );
-                          result = toolContent;
-                          // followUpNeeded = handlerFollowUp;
-                          this.log(`Tool ${toolCall.toolName} (id: ${toolCall.toolCallId}) executed successfully.`);
+        if (toolCalls && toolCalls.length > 0) {
 
-                      } catch (error) {
-                          logError(`Error executing tool ${toolCall.toolName} (id: ${toolCall.toolCallId}):`, error);
-                          result = `Error executing tool ${toolCall.toolName}: ${(error as Error).message}`;
-                          isError = true;
-                      }
-                      
-                      // Add toolName to satisfy ToolResultPart
-                      toolResultsParts.push({ 
-                          type: 'tool-result', 
-                          toolCallId: toolCall.toolCallId, 
-                          toolName: toolCall.toolName, // Added toolName
-                          result,
-                          isError // Assuming isError is part of ToolResultPart or handled appropriately
-                      });
-                  }
-                  
-                  // Construct Tool message using CoreMessage type
-                  const toolResponseMessage: CoreMessage = {
-                      role: 'tool',
-                      content: toolResultsParts, 
-                  };
-                  currentMessages.push(toolResponseMessage);
+          // Collect results as ToolResultPart objects
+          const toolResultsParts: ToolResultPart[] = [];
+          for (const toolCall of toolCalls) {
+            this.log(`Attempting tool call: ${toolCall.toolName} with id ${toolCall.toolCallId}`);
+            let result: any;
+            let isError = false;
+            // let followUpNeeded = false; // Seems unused
 
-              } else {
-                  // If no tool calls, the assistant message is final
-                  finalAssistantMessage = assistantMessage;
-                  return { nextMessages: currentMessages, finalAssistantMessage };
-              }
+            try {
+              const { content: toolContent /*, followUp: handlerFollowUp*/ } = await this.dispatchToolCall(
+                toolCall.toolName,
+                toolCall.args as Record<string, unknown>,
+              );
+              result = toolContent;
+              // followUpNeeded = handlerFollowUp;
+              this.log(`Tool ${toolCall.toolName} (id: ${toolCall.toolCallId}) executed successfully.`);
 
-          } catch (error) {
-              logError("Error calling Vercel AI SDK generateText:", error);
-              const errorMessage: CoreMessage = { role: "assistant", content: "Sorry, an error occurred while processing your request." };
-              currentMessages.push(errorMessage);
-              finalAssistantMessage = errorMessage;
-              return { nextMessages: currentMessages, finalAssistantMessage };
+            } catch (error) {
+              logError(`Error executing tool ${toolCall.toolName} (id: ${toolCall.toolCallId}):`, error);
+              result = `Error executing tool ${toolCall.toolName}: ${(error as Error).message}`;
+              isError = true;
+            }
+
+            // Add toolName to satisfy ToolResultPart
+            toolResultsParts.push({
+              type: 'tool-result',
+              toolCallId: toolCall.toolCallId,
+              toolName: toolCall.toolName, // Added toolName
+              result,
+              isError // Assuming isError is part of ToolResultPart or handled appropriately
+            });
           }
-      }
 
-      logError(`Max tool roundtrips (${maxToolRoundtrips}) reached.`);
-      const maxRoundtripMessage: CoreMessage = { role: "assistant", content: "Processing your request involved multiple steps and reached the maximum limit. Please try rephrasing if the action wasn't completed." };
-      currentMessages.push(maxRoundtripMessage);
-      finalAssistantMessage = maxRoundtripMessage;
-      return { nextMessages: currentMessages, finalAssistantMessage };
+          // Construct Tool message using CoreMessage type
+          const toolResponseMessage: CoreMessage = {
+            role: 'tool',
+            content: toolResultsParts,
+          };
+          currentMessages.push(toolResponseMessage);
+
+        } else {
+          // If no tool calls, the assistant message is final
+          finalAssistantMessage = assistantMessage;
+          return { nextMessages: currentMessages, finalAssistantMessage };
+        }
+
+      } catch (error) {
+        logError("Error calling Vercel AI SDK generateText:", error);
+        const errorMessage: CoreMessage = { role: "assistant", content: "Sorry, an error occurred while processing your request." };
+        currentMessages.push(errorMessage);
+        finalAssistantMessage = errorMessage;
+        return { nextMessages: currentMessages, finalAssistantMessage };
+      }
+    }
+
+    logError(`Max tool roundtrips (${maxToolRoundtrips}) reached.`);
+    const maxRoundtripMessage: CoreMessage = { role: "assistant", content: "Processing your request involved multiple steps and reached the maximum limit. Please try rephrasing if the action wasn't completed." };
+    currentMessages.push(maxRoundtripMessage);
+    finalAssistantMessage = maxRoundtripMessage;
+    return { nextMessages: currentMessages, finalAssistantMessage };
   }
 
 
@@ -396,17 +427,19 @@ export class Agent {
     this.log("Dispatching tool call (Vercel AI SDK):", toolName, args);
 
     if (!this.mcpClient) {
-       throw new Error("MCP Client not initialized, cannot dispatch tool calls requiring it.");
+      throw new Error("MCP Client not initialized, cannot dispatch tool calls requiring it.");
     }
 
     const context: HandlerContext = {
       mcpClient: this.mcpClient,
       tokenMap: this.tokenMap,
       userAddress: this.userAddress,
+      wallet: this.wallet,
       executeAction: this.executeAction.bind(this),
       log: this.log.bind(this),
       // Pass the method directly, using the Zod inferred type
       describeWalletPositionsResponse: (response) => this.describeWalletPositionsResponse(response as McpGetWalletPositionsResponse),
+      describeSearchAndBidResponse: (response) => this.describeSearchAndBidResponse(response),
     };
 
     const withFollowUp = async (handlerPromise: Promise<string>) => ({ content: await handlerPromise, followUp: true });
@@ -419,11 +452,11 @@ export class Agent {
             handleBorrow(args as { tokenName: string; amount: string }, context),
           );
         case "repay":
-           return withFollowUp(
+          return withFollowUp(
             handleRepay(args as { tokenName: string; amount: string }, context),
           );
         case "supply":
-           return withFollowUp(
+          return withFollowUp(
             handleSupply(args as { tokenName: string; amount: string }, context),
           );
         case "withdraw":
@@ -433,6 +466,22 @@ export class Agent {
         case "getUserPositions":
           const description = await handleGetUserPositions(args, context);
           return verbatim(Promise.resolve(description));
+        case "buyNFT":
+          return withFollowUp(
+            handleBuyNFT(args as { collectionName: string; amount: string; attributes: string[] | null; tokenId: string | null }, context),
+          );
+        case "listAutoAccept":
+          return withFollowUp(
+            handlelistAutoAcceptNFT(args as { collectionName: string; amount: string }, context),
+          );
+        case "searchNFT":
+          return withFollowUp(
+            handleSearchNFT(args as { collectionName: string; attributes: string[] | null; tokenId: string | null }, context),
+          );
+        case "offerNFT":
+          return withFollowUp(
+            handlePlaceOfferNFT(args as { collectionName: string; amount: string; attributes: string[] | null; tokenId: string | null }, context),
+          );
         default:
           this.log(`Warning: Unknown tool call requested by LLM: ${toolName}`);
           throw new Error(`Unknown tool requested: ${toolName}`);
@@ -446,11 +495,12 @@ export class Agent {
   async executeAction(
     actionName: string,
     transactions: any[], // TODO: Validate this with TransactionPlanSchema from handlers?
+    chain: "arbitrum" | "apechain"
   ): Promise<string> {
     // Add validation using TransactionPlanSchema if imported/defined here
     // const validation = z.array(TransactionPlanSchema).safeParse(transactions);
     // if (!validation.success) { ... handle error ... }
-    
+
     if (!transactions || transactions.length === 0) {
       this.log(`${actionName}: No transactions required.`);
       return `${actionName}: No transactions required.`;
@@ -459,7 +509,7 @@ export class Agent {
       this.log(`Executing ${transactions.length} transaction(s) for ${actionName}...`);
       const txHashes: string[] = [];
       for (const transaction of transactions) {
-        const txHash = await this.signAndSendTransaction(transaction);
+        const txHash = await this.signAndSendTransaction(transaction, chain);
         this.log(`${actionName} transaction sent: ${txHash}`);
         txHashes.push(txHash);
       }
@@ -471,13 +521,16 @@ export class Agent {
     }
   }
 
-  async signAndSendTransaction(tx: any): Promise<string> {
-    const provider = this.signer.provider;
+  async signAndSendTransaction(tx: any, chain: "arbitrum" | "apechain"): Promise<string> {
+    // const signer = this.getSigner("arbitrum");
+    const signer = this.getSigner(chain); 
+    const provider = signer.provider;
+
     if (!provider) throw new Error("Signer is not connected to a provider.");
 
     if (!tx.to || !tx.data) {
-        logError("Transaction object missing 'to' or 'data' field:", tx);
-        throw new Error("Transaction object is missing required fields ('to', 'data').");
+      logError("Transaction object missing 'to' or 'data' field:", tx);
+      throw new Error("Transaction object is missing required fields ('to', 'data').");
     }
 
     const ethersTx: ethers.providers.TransactionRequest = {
@@ -491,13 +544,13 @@ export class Agent {
       const dataPrefix = tx.data ? ethers.utils.hexlify(tx.data).substring(0, 10) : '0x';
       this.log(`Sending transaction to ${ethersTx.to} from ${ethersTx.from} with data ${dataPrefix}...`);
 
-      const txResponse = await this.signer.sendTransaction(ethersTx);
+      const txResponse = await signer.sendTransaction(ethersTx);
       this.log(`Transaction submitted: ${txResponse.hash}. Waiting for confirmation...`);
       const receipt = await txResponse.wait(1);
       this.log(`Transaction confirmed in block ${receipt.blockNumber} (Status: ${receipt.status === 1 ? 'Success' : 'Failed'}): ${txResponse.hash}`);
-       if (receipt.status === 0) {
-            throw new Error(`Transaction ${txResponse.hash} failed (reverted).`);
-        }
+      if (receipt.status === 0) {
+        throw new Error(`Transaction ${txResponse.hash} failed (reverted).`);
+      }
       return txResponse.hash;
     } catch(error) {
       const errMsg = (error as any)?.reason || (error as Error).message;
@@ -507,7 +560,7 @@ export class Agent {
     }
   }
 
-   // Use the Zod inferred type for the response parameter
+  // Use the Zod inferred type for the response parameter
   private describeWalletPositionsResponse(response: McpGetWalletPositionsResponse): string {
     if (!response || !response.positions || response.positions.length === 0) {
       return "You currently have no active lending or borrowing positions.";
@@ -545,13 +598,13 @@ export class Agent {
           }
         }
       } else {
-         // Handle or log other position types if necessary
+        // Handle or log other position types if necessary
       }
     }
     return output.trim();
   }
 
-   // Return the Zod inferred type
+  // Return the Zod inferred type
   private async fetchAndCacheCapabilities(): Promise<McpGetCapabilitiesResponse> {
     this.log("Fetching lending and borrowing capabilities via MCP...");
     if (!this.mcpClient) {
@@ -566,33 +619,71 @@ export class Agent {
 
       // Validate the raw result from MCP client
       const validationResult = McpGetCapabilitiesResponseSchema.safeParse(capabilitiesResult);
-      
+
       if (!validationResult.success) {
-         logError("Fetched capabilities validation failed:", validationResult.error);
-         // Decide how to handle this - throw, or return default/empty?
-         throw new Error(`Fetched capabilities failed validation: ${validationResult.error.message}`);
+        logError("Fetched capabilities validation failed:", validationResult.error);
+        // Decide how to handle this - throw, or return default/empty?
+        throw new Error(`Fetched capabilities failed validation: ${validationResult.error.message}`);
       }
-      
+
       const capabilities = validationResult.data; // Use validated data
 
       // Cache the validated data
       try {
-          await fs.mkdir(path.dirname(CACHE_FILE_PATH), { recursive: true });
-          // Store the validated data, not the raw result
-          await fs.writeFile(CACHE_FILE_PATH, JSON.stringify(capabilities, null, 2), "utf-8");
-          this.log("Capabilities cached successfully.");
+        await fs.mkdir(path.dirname(CACHE_FILE_PATH), { recursive: true });
+        // Store the validated data, not the raw result
+        await fs.writeFile(CACHE_FILE_PATH, JSON.stringify(capabilities, null, 2), "utf-8");
+        this.log("Capabilities cached successfully.");
       } catch (cacheError) {
-          logError("Failed to cache capabilities:", cacheError);
+        logError("Failed to cache capabilities:", cacheError);
       }
 
       return capabilities;
 
     } catch (error) {
-        logError("Error fetching or validating capabilities via MCP:", error);
-        throw new Error(`Failed to fetch/validate capabilities from MCP server: ${(error as Error).message}`);
+      logError("Error fetching or validating capabilities via MCP:", error);
+      throw new Error(`Failed to fetch/validate capabilities from MCP server: ${(error as Error).message}`);
     }
   }
 
+  public getSigner(chain: "arbitrum" | "apechain"): ethers.Signer {
+    return chain === "arbitrum" ? this.arbitrumSigner : this.apechainSigner;
+  }
+
+  // Use the Zod inferred type for the response parameter
+  private describeSearchAndBidResponse(response: any): string {
+
+    if (!response  || response.length === 0) {
+      return "No NFTs found in the collection.";
+    }
+  
+    let output = `NFTs in the "${response.collection}" collection:\n`;
+  
+    // Loop through the NFTs and format the output
+    for (const nft of response) {
+      const listedPrice = nft.priceUsd ? `$${formatNumeric(nft.priceUsd)}` : "Not listed";
+      const rarity = nft.rarity ? `${nft.rarity.toFixed(2)}` : "Unknown";
+      const marketplaceUrl = nft.marketplaceUrl || "N/A";
+  
+      output += `--------------------\n`;
+      output += `NFT: ${nft.name} ${nft.tokenId}\n`;
+      output += `Description: ${nft.description}\n`;
+      output += `Price: ${nft.price} ${nft.currency} (~${listedPrice})\n`;
+      output += `Rarity Score: ${rarity}\n`;
+      output += `Owner: ${nft.owner}\n`;
+      output += `Marketplace: ${nft.marketplace}\n`;
+      output += `Link: ${marketplaceUrl}\n`;
+
+      if (nft.attributes?.length > 0) {
+        output += `Attributes:\n`;
+        for (const attr of nft.attributes) {
+          output += `  - ${attr.key}: ${attr.value}\n`;
+        }
+      }
+    
+    }
+    return output.trim();
+  }
 } // End of Agent class
 
 
@@ -611,13 +702,13 @@ function formatNumeric(value: string | number | undefined, minDecimals = 2, maxD
 
   if (isNaN(num)) return "N/A";
 
-   try {
+  try {
     return num.toLocaleString(undefined, {
       minimumFractionDigits: minDecimals,
       maximumFractionDigits: maxDecimals,
     });
   } catch (e) {
-     return num.toFixed(maxDecimals);
+    return num.toFixed(maxDecimals);
   }
 }
 
