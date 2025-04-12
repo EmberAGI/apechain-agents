@@ -33,9 +33,16 @@ const initializeAgent = async (): Promise<void> => {
   const wallet = ethers.Wallet.fromMnemonic(mnemonic);
   console.log(`Using wallet ${wallet.address}`);
 
-  const provider = new ethers.providers.JsonRpcProvider(rpc);
-  const signer = wallet.connect(provider);
-  agent = new Agent(signer, wallet.address);
+  // Initialize both providers
+  const arbitrumProvider = new ethers.providers.JsonRpcProvider("https://arbitrum.llamarpc.com");
+  const apechainProvider = new ethers.providers.JsonRpcProvider("https://rpc.apechain.com");
+
+  // Create signers for both chains
+  const arbitrumSigner = wallet.connect(arbitrumProvider);
+  const apechainSigner = wallet.connect(apechainProvider);
+
+  // Pass both signers to the agent
+  agent = new Agent(arbitrumSigner, apechainSigner, wallet);
   await agent.init();
 };
 
@@ -132,7 +139,7 @@ app.get("/sse", async (_req, res) => {
     clearInterval(keepaliveInterval);
     sseConnections.delete(res);
     transport.close?.();
-  });
+    });
 });
 
 app.post("/messages", async (req, res) => {
