@@ -8,6 +8,13 @@ import {
   handleSupply,
   handleWithdraw,
   handleGetUserPositions,
+  handleBuyNFT,
+  handlelistAutoAcceptNFT,
+  handleSearchNFT,
+  handlePlaceOfferNFT,
+  handlelistNFT,
+  handleWaitForBetterBid,
+  checkPendingAutoAccepts
 } from "./agentToolHandlers.js";
 import { promises as fs } from "fs";
 import path from "path";
@@ -16,6 +23,7 @@ import { generateText, tool, type CoreTool, type CoreMessage, type AssistantMess
 import { openai } from '@ai-sdk/openai';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import cron from "node-cron";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -95,10 +103,21 @@ const BorrowRepaySupplyWithdrawSchema = z.object({
   amount: z.string().describe("The amount of the token to use, as a string representation of a number."),
 });
 
+const NFTsSchema = z.object({
+  collectionName: z.string().describe("The name of the NFT Apechain collection (e.g., 'Gobs On Ape', 'Forever Undead'). Must be a valid collection available on the marketplace."),
+  amount: z.string().describe("The budget for purchasing NFTs, represented as a stringified number in the marketplace's currency (e.g., '100' for $100).").optional(),
+  attributes: z.array(z.string()).describe("Optional a list of desired NFT attributes (e.g., ['Laser Eyes', 'Gold Fur']). NFTs matching at least one of these attributes will be considered. Leave empty to ignore attributes.").optional(),
+  tokenId: z.string().describe("Optional list of token ID to filter specific NFTs (e.g., '123', '456'). Only NFTs with these token ID will be considered. Leave empty to include all.").optional(),
+  tokenSetId: z.array(z.string()).describe("Optional list of token set IDs (formatted as 'contract:tokenId'). Only these NFTs will be considered for actions like auto-accept or tracking. Leave empty to include all.").optional(),
+  emailAddress: z.string().email().describe("The user's email address required to notify them when a better bid becomes available. Collected after the user gives no to alternative offers.").optional(),
+});
+
 const GetUserPositionsSchema = z.object({});
 
 export class Agent {
-  private signer: ethers.Signer;
+  private arbitrumSigner: ethers.Signer;
+  private apechainSigner: ethers.Signer;
+  private wallet: ethers.Wallet;
   private userAddress: string;
   private tokenMap: Record<
     string,
@@ -113,9 +132,11 @@ export class Agent {
   private rl: readline.Interface | null = null;
   private llmTools: Record<string, CoreTool> = {};
 
-  constructor(signer: ethers.Signer, userAddress: string) {
-    this.signer = signer;
-    this.userAddress = userAddress;
+  constructor(arbitrumSigner: ethers.Signer, apechainSigner: ethers.Signer, wallet: ethers.Wallet) {
+    this.arbitrumSigner = arbitrumSigner;
+    this.apechainSigner = apechainSigner;
+    this.userAddress = wallet.address;
+    this.wallet = wallet;
     if (!process.env.OPENAI_API_KEY) {
       throw new Error("OPENAI_API_KEY not set!");
     }
@@ -144,6 +165,30 @@ export class Agent {
       getUserPositions: tool({
         description: "Get the user's current lending/borrowing positions, balances, and health factor.",
         parameters: GetUserPositionsSchema,
+      }),
+      buyNFT: tool({
+        description: "Purchase an NFT from a specified collection within the user's budget.",
+        parameters: NFTsSchema,
+      }),
+      autoAccept: tool({
+        description: "Automatically accepts bids for your NFTs that meet or exceed a specified price. If no qualifying bids are found, it suggests top alternative offers below your target price to help you consider other potential sales.",
+        parameters: NFTsSchema,
+      }),
+      searchNFT: tool({
+        description: "Search and display up to 10 NFTs from a collection based on specific attributes.",
+        parameters: NFTsSchema,
+      }),
+      offerNFT: tool({
+        description: "Place a bid on an NFT by specifying its ID or attributes and desired bid amount.",
+        parameters: NFTsSchema,
+      }),
+      listNFT: tool({
+        description: "List and display my NFT collection based with all the keys in the response.",
+        parameters: NFTsSchema,
+      }),
+      waitForBetterBid: tool({
+        description: "When the user gives no to the alternative offers, this tool requests the user's email address only for autoAccept along with the desired collection, amount, and take the tokenSetId from the previous request. It then saves the request and checks every 10 minutes for better NFT bids.",
+        parameters: NFTsSchema,
       }),
     };
   }
@@ -243,6 +288,8 @@ export class Agent {
       "Available tokens for lending and borrowing:",
       this.availableTokens,
     );
+
+    this.scheduleAutoAcceptChecker(); // <-- start the job after init
   }
 
   async start() {
@@ -403,10 +450,13 @@ export class Agent {
       mcpClient: this.mcpClient,
       tokenMap: this.tokenMap,
       userAddress: this.userAddress,
+      wallet: this.wallet,
       executeAction: this.executeAction.bind(this),
       log: this.log.bind(this),
       // Pass the method directly, using the Zod inferred type
       describeWalletPositionsResponse: (response) => this.describeWalletPositionsResponse(response as McpGetWalletPositionsResponse),
+      describeSearchAndBidResponse: (response) => this.describeSearchAndBidResponse(response),
+      describeAvailableBidResponse: (response) => this.describeAvailableBidResponse(response),
     };
 
     const withFollowUp = async (handlerPromise: Promise<string>) => ({ content: await handlerPromise, followUp: true });
@@ -433,6 +483,30 @@ export class Agent {
         case "getUserPositions":
           const description = await handleGetUserPositions(args, context);
           return verbatim(Promise.resolve(description));
+        case "buyNFT":
+          return withFollowUp(
+            handleBuyNFT(args as { collectionName: string; amount: string; attributes: string[] | null; tokenId: string | null }, context),
+          );
+        case "autoAccept":
+          return withFollowUp(
+            handlelistAutoAcceptNFT(args as { collectionName: string; amount: string }, context),
+          );
+        case "searchNFT":
+          return withFollowUp(
+            handleSearchNFT(args as { collectionName: string; attributes: string[] | null; tokenId: string | null }, context),
+          );
+        case "offerNFT":
+          return withFollowUp(
+            handlePlaceOfferNFT(args as { collectionName: string; amount: string; attributes: string[] | null; tokenId: string | null }, context),
+          );
+        case "listNFT":
+          return withFollowUp(
+            handlelistNFT(args as { collectionName: string; amount: string; }, context),
+          );
+        case "waitForBetterBid":
+          return withFollowUp(
+            handleWaitForBetterBid(args as { collectionName: string; amount: string; tokenSetId: string[] | null; emailAddress:string | null}, context),
+          );
         default:
           this.log(`Warning: Unknown tool call requested by LLM: ${toolName}`);
           throw new Error(`Unknown tool requested: ${toolName}`);
@@ -446,6 +520,7 @@ export class Agent {
   async executeAction(
     actionName: string,
     transactions: any[], // TODO: Validate this with TransactionPlanSchema from handlers?
+    chain: "arbitrum" | "apechain"
   ): Promise<string> {
     // Add validation using TransactionPlanSchema if imported/defined here
     // const validation = z.array(TransactionPlanSchema).safeParse(transactions);
@@ -459,7 +534,7 @@ export class Agent {
       this.log(`Executing ${transactions.length} transaction(s) for ${actionName}...`);
       const txHashes: string[] = [];
       for (const transaction of transactions) {
-        const txHash = await this.signAndSendTransaction(transaction);
+        const txHash = await this.signAndSendTransaction(transaction, chain);
         this.log(`${actionName} transaction sent: ${txHash}`);
         txHashes.push(txHash);
       }
@@ -471,13 +546,14 @@ export class Agent {
     }
   }
 
-  async signAndSendTransaction(tx: any): Promise<string> {
-    const provider = this.signer.provider;
+  async signAndSendTransaction(tx: any, chain: "arbitrum" | "apechain"): Promise<string> {
+    const signer = this.getSigner(chain); 
+    const provider = signer.provider;
     if (!provider) throw new Error("Signer is not connected to a provider.");
 
     if (!tx.to || !tx.data) {
-        logError("Transaction object missing 'to' or 'data' field:", tx);
-        throw new Error("Transaction object is missing required fields ('to', 'data').");
+      logError("Transaction object missing 'to' or 'data' field:", tx);
+      throw new Error("Transaction object is missing required fields ('to', 'data').");
     }
 
     const ethersTx: ethers.providers.TransactionRequest = {
@@ -491,13 +567,13 @@ export class Agent {
       const dataPrefix = tx.data ? ethers.utils.hexlify(tx.data).substring(0, 10) : '0x';
       this.log(`Sending transaction to ${ethersTx.to} from ${ethersTx.from} with data ${dataPrefix}...`);
 
-      const txResponse = await this.signer.sendTransaction(ethersTx);
+      const txResponse = await signer.sendTransaction(ethersTx);
       this.log(`Transaction submitted: ${txResponse.hash}. Waiting for confirmation...`);
       const receipt = await txResponse.wait(1);
       this.log(`Transaction confirmed in block ${receipt.blockNumber} (Status: ${receipt.status === 1 ? 'Success' : 'Failed'}): ${txResponse.hash}`);
-       if (receipt.status === 0) {
-            throw new Error(`Transaction ${txResponse.hash} failed (reverted).`);
-        }
+      if (receipt.status === 0) {
+        throw new Error(`Transaction ${txResponse.hash} failed (reverted).`);
+      }
       return txResponse.hash;
     } catch(error) {
       const errMsg = (error as any)?.reason || (error as Error).message;
@@ -507,7 +583,7 @@ export class Agent {
     }
   }
 
-   // Use the Zod inferred type for the response parameter
+  // Use the Zod inferred type for the response parameter
   private describeWalletPositionsResponse(response: McpGetWalletPositionsResponse): string {
     if (!response || !response.positions || response.positions.length === 0) {
       return "You currently have no active lending or borrowing positions.";
@@ -551,7 +627,7 @@ export class Agent {
     return output.trim();
   }
 
-   // Return the Zod inferred type
+  // Return the Zod inferred type
   private async fetchAndCacheCapabilities(): Promise<McpGetCapabilitiesResponse> {
     this.log("Fetching lending and borrowing capabilities via MCP...");
     if (!this.mcpClient) {
@@ -566,33 +642,134 @@ export class Agent {
 
       // Validate the raw result from MCP client
       const validationResult = McpGetCapabilitiesResponseSchema.safeParse(capabilitiesResult);
-      
+
       if (!validationResult.success) {
-         logError("Fetched capabilities validation failed:", validationResult.error);
-         // Decide how to handle this - throw, or return default/empty?
-         throw new Error(`Fetched capabilities failed validation: ${validationResult.error.message}`);
+        logError("Fetched capabilities validation failed:", validationResult.error);
+        // Decide how to handle this - throw, or return default/empty?
+        throw new Error(`Fetched capabilities failed validation: ${validationResult.error.message}`);
       }
-      
+
       const capabilities = validationResult.data; // Use validated data
 
       // Cache the validated data
       try {
-          await fs.mkdir(path.dirname(CACHE_FILE_PATH), { recursive: true });
-          // Store the validated data, not the raw result
-          await fs.writeFile(CACHE_FILE_PATH, JSON.stringify(capabilities, null, 2), "utf-8");
-          this.log("Capabilities cached successfully.");
+        await fs.mkdir(path.dirname(CACHE_FILE_PATH), { recursive: true });
+        // Store the validated data, not the raw result
+        await fs.writeFile(CACHE_FILE_PATH, JSON.stringify(capabilities, null, 2), "utf-8");
+        this.log("Capabilities cached successfully.");
       } catch (cacheError) {
-          logError("Failed to cache capabilities:", cacheError);
+        logError("Failed to cache capabilities:", cacheError);
       }
 
       return capabilities;
 
     } catch (error) {
-        logError("Error fetching or validating capabilities via MCP:", error);
-        throw new Error(`Failed to fetch/validate capabilities from MCP server: ${(error as Error).message}`);
+      logError("Error fetching or validating capabilities via MCP:", error);
+      throw new Error(`Failed to fetch/validate capabilities from MCP server: ${(error as Error).message}`);
     }
   }
 
+  public getSigner(chain: "arbitrum" | "apechain"): ethers.Signer {
+    return chain === "arbitrum" ? this.arbitrumSigner : this.apechainSigner;
+  }
+
+  // Use the Zod inferred type for the response parameter
+  private describeSearchAndBidResponse(response: any): string {
+
+    if (!response  || response.length === 0) {
+      return "No NFTs found in the collection.";
+    }
+  
+    let output = `NFTs in the "${response.collection}" collection:\n`;
+  
+    // Loop through the NFTs and format the output
+    for (const nft of response) {
+      const listedPrice = nft.priceUsd ? `$${formatNumeric(nft.priceUsd)}` : "Not listed";
+      const rarity = nft.rarity ? `${nft.rarity.toFixed(2)}` : "Unknown";
+      const marketplaceUrl = nft.marketplaceUrl || "N/A";
+  
+      output += `--------------------\n`;
+      output += `Collection: ${nft.collection}\n`;
+      output += `NFTname: ${nft.name} ${nft.tokenId}\n`;
+      output += `Description: ${nft.description}\n`;
+      output += `Price: ${nft.price} ${nft.currency} (~${listedPrice})\n`;
+      output += `Rarity Score: ${rarity}\n`;
+      output += `Owner: ${nft.owner}\n`;
+      output += `Marketplace: ${nft.marketplace}\n`;
+      output += `Link: ${marketplaceUrl}\n`;
+      output += `Topbid: ${nft?.topBidPriceInUsd}\n`;
+      output += `nftPrice: ${nft?.nftPrice}\n`;
+
+      if (nft.attributes?.length > 0) {
+        output += `Attributes:\n`;
+        for (const attr of nft.attributes) {
+          output += `  - ${attr.key}: ${attr.value}\n`;
+        }
+      }
+    
+    }
+    return output.trim();
+  }
+
+  private describeAvailableBidResponse(response: any): string {
+
+    if (response.sortedBids.length === 0) {
+      return `❌ No bids found for your NFTs in the "${response.collectionName}" collection.`;
+    }
+    
+    let output = `❌ No bid met your $${response.amount} requirement for "${response.collectionName} with tokenSetIds ${response.tokenSetIds}".\n\nHere are the top current offers:\n`;
+    
+    const top5 = response.sortedBids.slice(0, 5);
+
+    for (let i = 0; i < top5.length; i++) {
+      const bid = top5[i];
+      const usd = bid.price?.amount?.usd?.toFixed(4);
+      const tokenId = bid.tokenId.split(":")[1];
+      const currency = bid.price?.currency || "UNKNOWN";
+      const nativeAmount = bid.price?.amount?.native || "N/A";
+      const source = bid.source || "Magic Eden";
+    
+      output += `--------------------\n`;
+      output += `#${i + 1} 💸 $${usd} for Token #${tokenId}\n`;
+      output += `Currency: ${currency}\n`;
+      output += `Native Amount: ${nativeAmount}\n`;
+      output += `Marketplace: ${source}\n`;
+      output += `Bid ID: ${bid.id}\n`;
+      output += `tokenSetId: ${bid.tokenId}}\n`;
+    }
+    
+    const topBidUsd = response.sortedBids[0]?.price?.amount?.usd?.toFixed(4);
+    if (topBidUsd) {
+      output += `\n👉 You can try again with a lower price:\n> Try again with $${topBidUsd}`;
+    }
+    
+    return output.trim();
+  }
+
+  private scheduleAutoAcceptChecker() {
+    const context: HandlerContext = {
+      mcpClient: this.mcpClient,
+      tokenMap: this.tokenMap,
+      userAddress: this.userAddress,
+      wallet: this.wallet,
+      executeAction: this.executeAction.bind(this),
+      log: this.log.bind(this),
+      // Pass the method directly, using the Zod inferred type
+      describeWalletPositionsResponse: (response) => this.describeWalletPositionsResponse(response as McpGetWalletPositionsResponse),
+      describeSearchAndBidResponse: (response) => this.describeSearchAndBidResponse(response),
+      describeAvailableBidResponse: (response) => this.describeAvailableBidResponse(response),
+    };
+    // Run every 10 minutes
+    cron.schedule("*/10 * * * *", async () => {
+      try {
+        console.log("[AutoAccept] Running scheduled check...");
+        await checkPendingAutoAccepts(context); // call your internal logic
+        console.log("[AutoAccept] Done.");
+      } catch (err) {
+        console.error("[AutoAccept] Error:", err);
+      }
+    });
+  }
 } // End of Agent class
 
 
@@ -611,13 +788,13 @@ function formatNumeric(value: string | number | undefined, minDecimals = 2, maxD
 
   if (isNaN(num)) return "N/A";
 
-   try {
+  try {
     return num.toLocaleString(undefined, {
       minimumFractionDigits: minDecimals,
       maximumFractionDigits: maxDecimals,
     });
   } catch (e) {
-     return num.toFixed(maxDecimals);
+    return num.toFixed(maxDecimals);
   }
 }
 
