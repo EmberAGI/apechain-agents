@@ -12,6 +12,7 @@ import axios from 'axios';
 import { db } from '../src/database/db.js';
 import nodemailer from 'nodemailer';
 import * as dotenv from "dotenv";
+import { notifyAll } from "../src/index.js"
 
 dotenv.config();
 
@@ -952,12 +953,11 @@ async function findMatchingBid(tokenSetIds: string[], req: any, baseUrl: string,
     const bid = transactNFTs?.sortedBids
 
     if (transactNFTs && transactNFTs.isAccept) {
-      const updateQuery = `UPDATE waitingRequests SET makerAddress = ?, acceptedAmount = ?, transactionDetials = ?, isNotified = ?, isOfferAccepted = ? WHERE id = ? `;
+      const updateQuery = `UPDATE waitingRequests SET makerAddress = ?, acceptedAmount = ?, transactionDetials = ?, isOfferAccepted = ? WHERE id = ? `;
       await db.execute(updateQuery, [
         makerAddress, ,
         acceptedAmount,
         transactionDetials,
-        false,
         true,
         req.id
       ]);
@@ -982,7 +982,9 @@ async function findMatchingBid(tokenSetIds: string[], req: any, baseUrl: string,
 
 // Notify user via email or other methods
 async function notifyUser(bid: any, collectionName: string, emailAddress: string | null) {
-  await notifyUserThroughEmail(collectionName, emailAddress, bid)
+  const message = `Great news! A bid matching your requested price has been accepted for your NFT in the ${collectionName} collection. The transaction is completed with the amount of ${bid.acceptedAmount} and ${bid.transactionDetials} . Check your wallet for the update!`
+  await notifyUserThroughEmail(collectionName, emailAddress, message)
+  await notifyAll(message)
 }
 
 // Transacts the NFT by fetching bids and executing the transaction
@@ -1051,12 +1053,12 @@ async function transactNFT(tokenSetIds: string[], context: HandlerContext, baseU
 }
 
 // Notify user through email
-async function notifyUserThroughEmail(collectionName: string, emailAddress: string | null, bid: any) {
+async function notifyUserThroughEmail(collectionName: string, emailAddress: string | null, text: string) {
   try {
 
     if (!process.env.EMAIL || !process.env.EMAIL_PASSWORD) {
       console.error("Email credentials are not set.");
-      return;
+      return '';
     }
 
     const transporter = nodemailer.createTransport({
@@ -1069,14 +1071,14 @@ async function notifyUserThroughEmail(collectionName: string, emailAddress: stri
 
     if (!emailAddress) {
       console.error("Email address is not provided.");
-      return;
+      return '';
     }
 
     transporter.sendMail({
       from: process.env.EMAIL,
       to: emailAddress,
       subject: `Your NFT in ${collectionName} Was Sold!`,
-      text: `Great news! A bid matching your requested price has been accepted for your NFT in the ${collectionName} collection. The transaction is completed with the amount of ${bid.acceptedAmount} and ${bid.transactionDetials} . Check your wallet for the update!`
+      text: text
     });
 
     return "Email sent successfully!";

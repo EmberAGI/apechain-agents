@@ -714,10 +714,10 @@ export class Agent {
   private describeAvailableBidResponse(response: any): string {
 
     if (response.sortedBids.length === 0) {
-      return `❌ No bids found for your NFTs in the "${response.collectionName}" collection.`;
+      return `No bids found for your NFTs in the "${response.collectionName}" collection.`;
     }
     
-    let output = `❌ No bid met your $${response.amount} requirement for "${response.collectionName} with tokenSetIds ${response.tokenSetIds}".\n\nHere are the top current offers:\n`;
+    let output = `No bid met your $${response.amount} requirement for "${response.collectionName} with tokenSetIds ${response.tokenSetIds}".\n\nHere are the top current offers:\n`;
     
     const top5 = response.sortedBids.slice(0, 5);
 

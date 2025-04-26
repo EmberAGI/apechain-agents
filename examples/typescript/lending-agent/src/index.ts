@@ -6,6 +6,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import cors from "cors";
 import { z } from "zod";
+import { ServerResponse } from "http";
 
 dotenv.config();
 
@@ -81,6 +82,25 @@ server.tool(
   }
 );
 
+const notificationSubscribers = new Set<string>();
+
+server.tool(
+  "notifications",
+  "Subscribe to server-side notifications",
+  {},
+  async (_args, extra) => {
+
+    if (extra.sessionId) {
+      notificationSubscribers.add(extra.sessionId);
+    } else {
+      console.error("Session ID is undefined.");
+    }
+    return {
+      content: [{ type: "text", text: "Subscribed to notifications" }],
+    };
+  }
+);
+
 // Initialize Express app
 const app = express();
 
@@ -107,6 +127,8 @@ app.get("/", (_req, res) => {
 // Store active SSE connections
 const sseConnections = new Set();
 
+const sseTransports = new Map<string, SSEServerTransport>();
+
 let transport: SSEServerTransport
 
 // SSE endpoint
@@ -116,6 +138,8 @@ app.get("/sse", async (_req, res) => {
 
   // Add connection to active set
   sseConnections.add(res);
+
+  sseTransports.set(transport.sessionId, transport);
 
   // Setup keepalive interval
   const keepaliveInterval = setInterval(() => {
@@ -130,6 +154,8 @@ app.get("/sse", async (_req, res) => {
   _req.on('close', () => {
     clearInterval(keepaliveInterval);
     sseConnections.delete(res);
+    sseTransports.delete(transport.sessionId);
+    notificationSubscribers.delete(transport.sessionId);
     transport.close?.();
   });
 
@@ -145,6 +171,26 @@ app.get("/sse", async (_req, res) => {
 app.post("/messages", async (req, res) => {
   await transport.handlePostMessage(req, res);
 });
+
+export async function notifyAll(message: string) {
+
+  for (const sessionId of notificationSubscribers) {
+    const transport = sseTransports.get(sessionId);
+
+    const res = (transport as any)?._sseResponse as ServerResponse | undefined;
+    if (transport && res && !res.writableEnded) {
+
+      await transport.send({
+        jsonrpc: "2.0",
+        method: "notifications/message",
+        params: { text: message },
+      });
+    }
+    else {
+      console.warn(`No transport for session ${sessionId}`);
+    }
+  }
+}
 
 // Start the server
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
