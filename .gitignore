@@ -11,7 +11,7 @@ yarn-error.log*
 
 # Rust
 target/
-**/*.rs.bk 
+**/*.rs.bk
 
 # macOS
 .DS_Store
