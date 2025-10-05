@@ -1,9 +1,17 @@
 import { FormatterOptionsArgs, parseFile, writeToStream } from "fast-csv";
 
 import { ITableStorage } from "../../domain/tableStorage.js";
-import { createWriteStream, existsSync } from "node:fs";
+import {
+  appendFile,
+  createWriteStream,
+  existsSync,
+  open,
+  read,
+  close,
+} from "node:fs";
 import { ILogger } from "../../domain/logger.js";
 import { createDirIfNeeded } from "../../utils/createDir.js";
+import { getLastByte } from "../../utils/getLastByte.js";
 
 /**
  * Table storage based on storing CSV files in the local filesystem.
@@ -59,9 +67,25 @@ export class CsvLocalTableStorage<Shape extends Record<string, unknown>>
       return;
     }
 
-    await this.writeToCsv(createWriteStream(this.fileName, { flags: "a" }), [
-      value,
-    ]);
+    // Ensure the file ends with a newline before appending
+    // Only read the last byte to check for newline
+    const lastByte = (await getLastByte(this.fileName)) ?? 0x0a;
+    if (lastByte !== 0x0a) {
+      await new Promise<void>((resolve, reject) => {
+        appendFile(this.fileName, "\n", (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+
+    await this.writeToCsv(
+      createWriteStream(this.fileName, { flags: "a" }),
+      [value],
+      {
+        writeHeaders: false,
+      },
+    );
     this.logger?.debug("Row appended to CSV", { fileName: this.fileName });
   }
 
