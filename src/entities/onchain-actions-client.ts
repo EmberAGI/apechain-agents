@@ -1,18 +1,8 @@
 import * as z from "zod";
 import { TransactionInformationSchema } from "../domain/wallet.js";
-import { Environment } from "./environment.js";
-import { singleton } from "tsyringe";
 
-@singleton()
 export class OnchainActionsClient {
-  constructor(private environment: Environment) {}
-
-  private get baseUrl() {
-    return (
-      this.environment.settings.ONCHAIN_ACTIONS_API_URL ??
-      "https://api.emberai.xyz"
-    );
-  }
+  constructor(private baseUrl: string) {}
 
   /**
    * Fetch data from a REST API endpoint.

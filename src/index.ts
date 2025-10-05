@@ -1,6 +1,3 @@
-// Reflect metadata is required for tsyringe to work properly
-import "reflect-metadata";
-import { container } from "tsyringe";
 import { Environment } from "./entities/environment.js";
 import { TSRuntime } from "./entities/runtimes/ts.js";
 import { OnchainActionsClient } from "./entities/onchain-actions-client.js";
@@ -21,45 +18,29 @@ import { IFileStorage } from "./domain/fileStorage.js";
 import { MetaMaskWallet } from "./services/wallets/metamask.js";
 import { BundlerClient, createBundlerClient } from "viem/account-abstraction";
 import { setupAgent } from "./services/agent.js";
+import { en } from "zod/locales";
 
 export async function run() {
-  const environment = container.resolve(Environment);
+  const environment = new Environment();
 
   /**
-   * Register wallet client in container for dependency injection.
+   * Create clients for interacting with the blockchain.
    */
   const walletClient = createWalletClient({
     chain: arbitrumChain.chain,
     transport: http(environment.settings.ARBITRUM_RPC_URL),
   });
-  container.register<WalletClient<Transport, Chain>>("WalletClient", {
-    useValue: walletClient,
-  });
-
-  /**
-   * Register public client in container for dependency injection.
-   */
   const publicClient = createPublicClient({
     chain: arbitrumChain.chain,
     transport: http(environment.settings.ARBITRUM_RPC_URL),
   });
-  container.register<PublicClient>("PublicClient", {
-    useValue: publicClient,
-  });
-
-  /**
-   * Register bundler client
-   */
   const bundlerClient = createBundlerClient({
     chain: arbitrumChain.chain,
     transport: http(environment.settings.BUNDLER_URL),
   });
-  container.register<BundlerClient>("BundlerClient", {
-    useValue: bundlerClient,
-  });
 
   /**
-   * Register where vault local wallet will be stored
+   * Vault wallet (stored locally in a file)
    */
   const vaultLocalStorage = new LocalFileStorage(
     `${environment.settings.MEMORY_FOLDER}/vault-wallet.json`,
@@ -67,18 +48,22 @@ export async function run() {
   const vaultStoragePath = new JSONFileStorage<WalletStorage>(
     vaultLocalStorage,
   );
-  container.register<IFileStorage<WalletStorage>>(
-    "IFileStorage<WalletStorage>",
-    { useValue: vaultStoragePath },
-  );
+  const vaultWallet = new StoredLocalWallet(vaultStoragePath, walletClient);
 
   /**
    * Setup agent and run
    */
-  const runtime = container.resolve(TSRuntime);
-  const onchainActions = container.resolve(OnchainActionsClient);
-  const agentWallet = container.resolve(MetaMaskWallet);
-  const vaultWallet = container.resolve(StoredLocalWallet);
+  const agentWallet = new MetaMaskWallet(
+    vaultWallet,
+    publicClient,
+    bundlerClient,
+  );
+
+  // Run agent
+  const runtime = new TSRuntime();
+  const onchainActions = new OnchainActionsClient(
+    environment.settings.ONCHAIN_ACTIONS_API_URL,
+  );
   setupAgent(agentWallet, vaultWallet, runtime, environment, onchainActions);
   await runtime.runTillEnd();
 }

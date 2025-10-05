@@ -10,18 +10,15 @@ import {
   TransactionInformation,
 } from "../../domain/wallet.js";
 import { BundlerClient } from "viem/account-abstraction";
-import { inject, injectable } from "tsyringe";
 
 /**
  * MetaMask wallet implementation for the IWallet interface.
  */
-@injectable()
 export class MetaMaskWallet implements IWallet {
   private smartAccountCache: ToMetaMaskSmartAccountReturnType<Implementation> | null =
     null;
 
   constructor(
-    @inject("IViemWallet")
     private viemWallet: IViemWallet,
     private publicClient: PublicClient,
     private bundler: BundlerClient,

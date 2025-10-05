@@ -1,4 +1,3 @@
-import { singleton } from "tsyringe";
 import { IRuntime } from "../../domain/runtime.js";
 import { v4 as uuid } from "uuid";
 
@@ -10,7 +9,6 @@ const ONE_SECOND_IN_MS = 1_000;
 /**
  * A simple TypeScript runtime implementation using Node.js timers.
  */
-@singleton()
 export class TSRuntime implements IRuntime<string> {
   private taskMap = new Map<string, NodeJS.Timeout>();
 

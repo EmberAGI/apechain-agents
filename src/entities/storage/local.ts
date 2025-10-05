@@ -1,6 +1,5 @@
 import {
   access,
-  appendFile,
   mkdir,
   readFile,
   writeFile as writeFileAsync,
@@ -9,12 +8,10 @@ import { constants } from "node:fs";
 import { dirname } from "node:path";
 
 import { IFileStorage } from "../../domain/fileStorage.js";
-import { injectable } from "tsyringe";
 
 /**
  * File storage based on storing files in the local filesystem.
  */
-@injectable()
 export class LocalFileStorage implements IFileStorage<string> {
   constructor(public fileName: string) {}
 

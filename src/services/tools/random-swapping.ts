@@ -1,7 +1,7 @@
 import { IWallet } from "../../domain/wallet.js";
 import { arbitrumChain } from "../../entities/chain.js";
 import { getRandomBigInt, getRandomElement } from "../../utils/random.js";
-import { OnchainActionsClient } from "../../entities/onchain-actions-client.js";
+import { OnchainActionsClient } from "../onchain-actions-client.js";
 
 // A predefined pool of token addresses to swap between, this are all for arbitrum chain
 export const TOKEN_POOL = [

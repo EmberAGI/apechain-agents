@@ -1,6 +1,6 @@
 import { ITableStorage } from "../../domain/tableStorage.js";
 import * as z from "zod";
-import { OnchainActionsClient } from "../../entities/onchain-actions-client.js";
+import { OnchainActionsClient } from "../onchain-actions-client.js";
 import { IWallet } from "../../domain/wallet.js";
 
 /**

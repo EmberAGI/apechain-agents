@@ -9,7 +9,6 @@ import { IViemWallet, TransactionInformation } from "../../domain/wallet.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import * as z from "zod";
 import { IFileStorage } from "../../domain/fileStorage.js";
-import { injectable } from "tsyringe";
 
 /**
  * A wallet that uses a local private key to sign transactions.
@@ -66,7 +65,6 @@ export type WalletStorage = z.infer<typeof WalletStorageSchema>;
 /**
  * A wallet that stores its private key in a file storage.
  */
-@injectable()
 export class StoredLocalWallet implements IViemWallet {
   private localAccountCache: LocalWallet | null = null;
   constructor(
