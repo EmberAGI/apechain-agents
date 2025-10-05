@@ -12,6 +12,13 @@
   "license": "ISC",
   "packageManager": "pnpm@10.7.0",
   "dependencies": {
+    "@metamask/delegation-toolkit": "^0.13.0",
+    "fast-csv": "^5.0.5",
+    "reflect-metadata": "^0.2.2",
+    "tsyringe": "^4.10.0",
+    "uuid": "^13.0.0",
+    "viem": "^2.37.9",
+    "zod": "^4.1.11"
   },
   "devDependencies": {
     "@types/node": "^22.13.14",
