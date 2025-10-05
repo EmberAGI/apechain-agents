@@ -28,11 +28,9 @@ export class MetaMaskWallet implements IWallet {
     this.logger.info("MetaMaskWallet created");
   }
 
-  public async getAddress(): Promise<`0x${string}`> {
-    const account = await this.getMetamaskWallet();
-    const address = account.getAddress();
-    this.logger.debug("MetaMaskWallet address retrieved", { address });
-    return address;
+  public getAddress(): Promise<`0x${string}`> {
+    // Return local wallet as actions are done through those
+    return this.viemWallet.getAddress();
   }
 
   public async executeTransaction(
@@ -76,6 +74,9 @@ export class MetaMaskWallet implements IWallet {
       deployParams: [account.address, [], [], []],
       deploySalt: "0x",
       signer: { account },
+    });
+    this.logger.info("Metamask wallet retrieved", {
+      address: this.smartAccountCache.address,
     });
     return this.smartAccountCache;
   }

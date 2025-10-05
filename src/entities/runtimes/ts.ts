@@ -19,13 +19,17 @@ export class TSRuntime implements IRuntime<string> {
   ): Promise<string> {
     const taskId = uuid();
     if (!oneOf) {
-      const timeout = setTimeout(task, delayMs);
+      const repeatedTask = async () => {
+        await task().catch(() => {}); // Silently catch task errors
+        this.scheduleTask(task, delayMs);
+      };
+      const timeout = setTimeout(repeatedTask, delayMs);
       this.taskMap.set(taskId, timeout);
       return taskId;
     }
 
     const taskWithDeletion = async () => {
-      await task();
+      await task().catch(() => {});
       this.clearTask(taskId);
     };
     return this.scheduleTask(taskWithDeletion, delayMs, false);

@@ -143,7 +143,7 @@ export class OnchainActionsClient {
         },
       );
       this.logger.debug("Swap created", {
-        fromToken: result.token.symbol,
+        fromToken: result.fromToken.symbol,
         toToken: result.toToken.symbol,
         fromAmount: result.displayFromAmount,
         toAmount: result.displayToAmount,
@@ -182,11 +182,12 @@ const TokenSchema = z.object({
  */
 const UserAssetSchema = z
   .object({
-    decimals: z.number().int().nonnegative(),
     valueUsd: z.number().nonnegative(),
     amount: z.string(),
   })
-  .extend(TokenSchema.shape);
+  .extend(
+    TokenSchema.pick({ symbol: true, decimals: true, tokenUid: true }).shape,
+  );
 
 /**
  * Schema for user balances.
@@ -212,7 +213,7 @@ type SwapTokenRequest = z.infer<typeof SwapTokenRequestSchema>;
  * Schema for a swap token response.
  */
 const SwapTokenResponseSchema = z.object({
-  token: TokenSchema,
+  fromToken: TokenSchema,
   toToken: TokenSchema,
   exactFromAmount: z.string(),
   displayFromAmount: z.string(),

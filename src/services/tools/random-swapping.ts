@@ -7,7 +7,7 @@ import { ILogger } from "../../domain/logger.js";
 // A predefined pool of token addresses to swap between, this are all for arbitrum chain
 export const TOKEN_POOL = [
   "0xaf88d065e77c8cc2239327c5edb3a432268e5831", // USDC
-  "0x000000000000000000000000000000000000000000", // ETH
+  "0x0000000000000000000000000000000000000000", // ETH
   "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f", // WBTC
   "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0", // Uniswap
 ] as `0x${string}`[];
@@ -74,7 +74,7 @@ export class RandomSwappingTradingStrategy {
 
       this.logger.info("Swap created successfully", {
         fromAmount: swapResult.displayFromAmount,
-        fromToken: swapResult.token.symbol,
+        fromToken: swapResult.fromToken.symbol,
         toAmount: swapResult.displayToAmount,
         toToken: swapResult.toToken.symbol,
         requestId: swapResult.providerTracking.requestId,
