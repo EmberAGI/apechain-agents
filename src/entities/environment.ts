@@ -11,6 +11,7 @@ export const Settings = z.object({
     .default("https://api.emberai.xyz"),
   ARBITRUM_RPC_URL: z.url(),
   BUNDLER_URL: z.url(),
+  LOG_LEVEL: z.string().default("info"),
 });
 
 /**

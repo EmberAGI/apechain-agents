@@ -5,6 +5,7 @@ import { Environment } from "../entities/environment.js";
 import { CsvLocalTableStorage } from "../entities/storage/csv.js";
 import { OnchainActionsClient } from "../entities/onchain-actions-client.js";
 import { RandomSwappingTradingStrategy } from "./tools/random-swapping.js";
+import { ILogger } from "../domain/logger.js";
 
 /**
  * Number of milliseconds in one minute.
@@ -22,21 +23,25 @@ export function setupAgent(
   runtime: IRuntime<unknown>,
   environment: Environment,
   onchainActionsClient: OnchainActionsClient,
+  logger: ILogger,
 ) {
   /**
    * Schedule the accounting tool to run every minute.
    */
   const accountingStorage = new CsvLocalTableStorage<AccountingRow>(
     `${environment.settings.MEMORY_FOLDER}/accounting.csv`,
+    ",",
+    logger.child({ component: "AccountingStorage" }),
   );
   const accountTool = new AccountingTool(
     vaultWallet,
     accountingStorage,
     onchainActionsClient,
+    logger.child({ component: "AccountingTool" }),
   );
   runtime.scheduleTask(
     accountTool.execute.bind(accountTool),
-    ONE_MINUTE_IN_MILLISECONDS,
+    10_000, //ONE_MINUTE_IN_MILLISECONDS,
   );
 
   /**
@@ -45,9 +50,10 @@ export function setupAgent(
   const randomSwappingStrategy = new RandomSwappingTradingStrategy(
     agentWallet,
     onchainActionsClient,
+    logger.child({ component: "RandomSwappingTradingStrategy" }),
   );
   runtime.scheduleTask(
     randomSwappingStrategy.execute.bind(randomSwappingStrategy),
-    HALF_MINUTE_IN_MILLISECONDS,
+    15_000, // HALF_MINUTE_IN_MILLISECONDS,
   );
 }

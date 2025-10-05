@@ -10,6 +10,7 @@ import {
   TransactionInformation,
 } from "../../domain/wallet.js";
 import { BundlerClient } from "viem/account-abstraction";
+import { ILogger } from "../../domain/logger.js";
 
 /**
  * MetaMask wallet implementation for the IWallet interface.
@@ -22,18 +23,26 @@ export class MetaMaskWallet implements IWallet {
     private viemWallet: IViemWallet,
     private publicClient: PublicClient,
     private bundler: BundlerClient,
-  ) {}
+    private logger: ILogger,
+  ) {
+    this.logger.info("MetaMaskWallet created");
+  }
 
   public async getAddress(): Promise<`0x${string}`> {
     const account = await this.getMetamaskWallet();
-    return account.getAddress();
+    const address = account.getAddress();
+    this.logger.debug("MetaMaskWallet address retrieved", { address });
+    return address;
   }
 
   public async executeTransaction(
     transactionInfo: TransactionInformation[],
   ): Promise<`0x${string}` | null> {
     try {
-      return await this.bundler.sendUserOperation({
+      this.logger.info("Executing transaction via MetaMaskWallet", {
+        transactionCount: transactionInfo.length,
+      });
+      const hash = await this.bundler.sendUserOperation({
         account: await this.getMetamaskWallet(),
         calls: transactionInfo.map((tx) => ({
           to: tx.to,
@@ -41,7 +50,12 @@ export class MetaMaskWallet implements IWallet {
           data: tx.data ? tx.data : "0x",
         })),
       });
-    } catch {
+      this.logger.info("Transaction executed successfully", { hash });
+      return hash;
+    } catch (error) {
+      this.logger.error("Transaction execution failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }

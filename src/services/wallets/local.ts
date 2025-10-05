@@ -9,6 +9,7 @@ import { IViemWallet, TransactionInformation } from "../../domain/wallet.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import * as z from "zod";
 import { IFileStorage } from "../../domain/fileStorage.js";
+import { ILogger } from "../../domain/logger.js";
 
 /**
  * A wallet that uses a local private key to sign transactions.
@@ -19,7 +20,12 @@ export class LocalWallet implements IViemWallet {
   constructor(
     private privateKey: `0x${string}`,
     private walletClient: WalletClient<Transport, Chain>,
-  ) {}
+    private logger: ILogger,
+  ) {
+    this.logger.info("LocalWallet created", {
+      address: privateKeyToAccount(privateKey).address,
+    });
+  }
 
   public async getAccount() {
     if (!this.localAccountCache) {
@@ -70,23 +76,29 @@ export class StoredLocalWallet implements IViemWallet {
   constructor(
     private privateKeyStorage: IFileStorage<WalletStorage>,
     private walletClient: WalletClient<Transport, Chain>,
-  ) {}
+    private logger: ILogger,
+  ) {
+    this.logger.info("StoredLocalWallet created");
+  }
 
   private async getLocalAccount(): Promise<LocalWallet> {
     if (this.localAccountCache) {
       return this.localAccountCache;
     }
-    const storedValue = this.privateKeyStorage.getFileContents();
+    const storedValue = await this.privateKeyStorage.getFileContents();
     if (!storedValue) {
       const privateKey = generatePrivateKey();
       await this.privateKeyStorage.writeFile({ privateKey });
-      return new LocalWallet(privateKey, this.walletClient);
+      this.logger.info("Generated new private key for StoredLocalWallet");
+      return new LocalWallet(privateKey, this.walletClient, this.logger);
     }
 
     const parsed = await WalletStorageSchema.parseAsync(storedValue);
+    this.logger.info("Loaded existing private key for StoredLocalWallet");
     this.localAccountCache = new LocalWallet(
       parsed.privateKey,
       this.walletClient,
+      this.logger,
     );
     return this.localAccountCache;
   }
